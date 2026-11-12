@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Vérification de certificat - Samaritains Genève</title>
+<style>
+  :root{--rouge:#ff0000;--vert:#15803d;--orange:#b45309;--gris:#475569}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:Arial,Helvetica,sans-serif;background:#f1f5f9;color:#0f172a;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}
+  main{width:100%;max-width:460px;background:#fff;border:3px solid var(--rouge);box-shadow:5px 5px 0 #000;padding:22px 20px 18px}
+  .marque{font-size:13px;color:var(--gris);letter-spacing:.04em;text-transform:uppercase;margin:0 0 14px}
+  h1{font-size:20px;margin:0 0 16px}
+  .etat{border-radius:10px;padding:16px 14px;text-align:center;font-weight:700;font-size:26px;letter-spacing:.03em;margin:0 0 16px}
+  .etat small{display:block;font-size:14px;font-weight:400;margin-top:6px;letter-spacing:0}
+  .ok{background:#dcfce7;color:var(--vert);border:2px solid var(--vert)}
+  .exp{background:#ffedd5;color:var(--orange);border:2px solid var(--orange)}
+  .ko{background:#fee2e2;color:#991b1b;border:2px solid #991b1b}
+  dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:8px 14px;font-size:16px}
+  dt{color:var(--gris)}dd{margin:0;font-weight:700;word-break:break-word}
+  .note{margin:16px 0 0;font-size:12px;color:var(--gris);line-height:1.4}
+  .cache{display:none}
+</style>
+</head>
+<body>
+<main>
+  <p class="marque">Samaritains Genève (SamGE)</p>
+  <h1>Vérification de certificat</h1>
+  <div id="etat" class="etat ko">Vérification…</div>
+  <dl id="details" class="cache"></dl>
+  <p id="note" class="note"></p>
+</main>
+<script>
+"use strict";
+// Clés publiques de signature de SamGE (générées par Dispatch). Plusieurs clés possibles : les certificats signés
+// avec une ancienne clé restent vérifiables.
+const CLES_PUBLIQUES = [{"kty":"EC","crv":"P-256","x":"2xCpJf5FNY1liWVZSvWZQapOZgO_Z_veV1SVcYrdAIU","y":"5Z9gwdDxKNxM3BCEgLDeDK8fmVflZImLwD8MMYNSqAY"}];
+
+const $ = id => document.getElementById(id);
+function octets(b64url){
+  const s = b64url.replace(/-/g,"+").replace(/_/g,"/"), pad = "=".repeat((4 - s.length % 4) % 4);
+  const bin = atob(s + pad), out = new Uint8Array(bin.length);
+  for(let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+function afficher(classe, titre, sousTitre){
+  const e = $("etat"); e.className = "etat " + classe; e.textContent = titre;
+  if(sousTitre){ const s = document.createElement("small"); s.textContent = sousTitre; e.appendChild(s); }
+}
+function ligne(dl, nom, valeur){
+  const dt = document.createElement("dt"), dd = document.createElement("dd");
+  dt.textContent = nom; dd.textContent = valeur; dl.appendChild(dt); dl.appendChild(dd);
+}
+const pad2 = n => String(n).padStart(2, "0");
+const fr = d => pad2(d.getDate()) + "." + pad2(d.getMonth() + 1) + "." + d.getFullYear();
+// date de fin = date du cours + N mois (le 31 + 1 mois = dernier jour du mois suivant, jamais un débordement)
+function ajouterMois(d, n){
+  const j = d.getDate(), r = new Date(d.getFullYear(), d.getMonth() + n, 1);
+  const dernier = new Date(r.getFullYear(), r.getMonth() + 1, 0).getDate();
+  r.setDate(Math.min(j, dernier)); return r;
+}
+const TYPES = { BLS: "BLS-AED-SRC" };
+
+async function verifier(){
+  let frag = location.hash.slice(1);
+  if(!frag){ afficher("ko", "Aucun certificat", "Scannez le code QR imprimé sur le certificat."); return; }
+  let texte;
+  try{ texte = decodeURIComponent(frag); }catch(e){ afficher("ko", "NON AUTHENTIQUE", "Lien illisible."); return; }
+  const i = texte.lastIndexOf(".");
+  if(i < 1){ afficher("ko", "NON AUTHENTIQUE", "Lien incomplet."); return; }
+  const charge = texte.slice(0, i), signature = texte.slice(i + 1);
+  let authentique = false;
+  try{
+    const sig = octets(signature), msg = new TextEncoder().encode(charge);
+    if(sig.length !== 64) throw new Error("longueur");
+    for(const jwk of CLES_PUBLIQUES){
+      const cle = await crypto.subtle.importKey("jwk", jwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+      if(await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, cle, sig, msg)){ authentique = true; break; }
+    }
+  }catch(e){ authentique = false; }
+  if(!authentique){ afficher("ko", "NON AUTHENTIQUE", "Ce certificat n'a pas été émis par Samaritains Genève, ou il a été modifié."); return; }
+
+  // champs signés : version ~ type ~ nom ~ naissance(jjmmaaaa ou 0) ~ date du cours(aaaammjj) ~ validité en mois
+  const f = charge.split("~");
+  if(f.length !== 6 || f[0] !== "1" || !/^\d{8}$/.test(f[4]) || !/^\d{1,3}$/.test(f[5])){
+    afficher("ko", "NON AUTHENTIQUE", "Format de certificat inconnu."); return;
+  }
+  const cours = new Date(+f[4].slice(0,4), +f[4].slice(4,6) - 1, +f[4].slice(6,8));
+  const mois = +f[5], fin = ajouterMois(cours, mois);
+  const auj = new Date(); auj.setHours(0,0,0,0);
+  const valide = auj <= fin;
+  const jours = Math.round((fin - auj) / 86400000);
+  if(valide) afficher("ok", "VALIDE", jours === 0 ? "Dernier jour de validité" : "Encore " + jours + " jour" + (jours > 1 ? "s" : "") + " de validité");
+  else afficher("exp", "EXPIRÉ", "Validité terminée le " + fr(fin));
+
+  const dl = $("details"); dl.classList.remove("cache");
+  ligne(dl, "Nom", f[2]);
+  if(/^\d{8}$/.test(f[3])) ligne(dl, "Né(e) le", f[3].slice(0,2) + "." + f[3].slice(2,4) + "." + f[3].slice(4));
+  ligne(dl, "Certificat", TYPES[f[1]] || f[1]);
+  ligne(dl, "Cours du", fr(cours));
+  ligne(dl, "Valable jusqu'au", fr(fin));
+  ligne(dl, "Durée de validité", mois + " mois");
+  $("note").textContent = "Certificat authentique, émis par Samaritains Genève. Vérifiez que le nom et la date de naissance correspondent à une pièce d'identité. Cette page ne conserve aucune donnée.";
+}
+verifier();
+window.addEventListener("hashchange", () => location.reload());
+</script>
+</body>
+</html>
